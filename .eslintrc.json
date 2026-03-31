@@ -1,0 +1,20 @@
+{
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "globals": {
+    "browser": "readonly",
+    "module": "readonly"
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022
+  },
+  "extends": ["eslint:recommended", "prettier"],
+  "overrides": [
+    {
+      "files": ["**/*.test.js"],
+      "env": { "jest": true, "node": true }
+    }
+  ]
+}

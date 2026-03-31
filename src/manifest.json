@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "name": "Tab Router",
+  "version": "0.1.0",
+  "description": "Routes new tabs to windows by URL context, or opens a new window",
+  "permissions": [
+    "tabs"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  }
+}
