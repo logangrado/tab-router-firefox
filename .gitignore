@@ -2,3 +2,6 @@
 node_modules/
 web-ext-artifacts/
 *.xpi
+*.zip
+tab_router-*/
+.DS_Store
