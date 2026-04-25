@@ -352,4 +352,69 @@ describe("tab origin filtering", () => {
     onTabCreated({ id: 1, openerTabId: undefined, url: "" });
     expect(pendingNewTabs.has(1)).toBe(true);
   });
+
+  test("restored tab (url set at creation) is NOT added to pendingNewTabs", () => {
+    const { onTabCreated, pendingNewTabs } = fresh();
+    onTabCreated({ id: 1, openerTabId: undefined, url: "https://gitlab.com/org/repo" });
+    expect(pendingNewTabs.has(1)).toBe(false);
+  });
+});
+
+// ─── cmd-shift-T restore suppression ─────────────────────────────────────────
+
+describe("cmd-shift-T restore suppression", () => {
+  let mod;
+
+  beforeEach(() => {
+    mod = fresh();
+    global.browser = {
+      tabs: { move: jest.fn().mockResolvedValue({}), update: jest.fn().mockResolvedValue({}) },
+      windows: {
+        update: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({ id: 99 }),
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete global.browser;
+  });
+
+  test("tab with URL already set at creation is not routed (parseSegments guard)", () => {
+    const { onTabCreated, onTabUpdated } = mod;
+    onTabCreated({ id: 5, openerTabId: undefined, url: "https://gitlab.com/org/repo", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(global.browser.tabs.move).not.toHaveBeenCalled();
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
+
+  test("restored tab (URL in recentlyClosed) is not routed", () => {
+    const { onTabCreated, onTabUpdated, recentlyClosed } = mod;
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(global.browser.tabs.move).not.toHaveBeenCalled();
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
+
+  test("restored tab consumes its recentlyClosed entry", () => {
+    const { onTabCreated, onTabUpdated, recentlyClosed } = mod;
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(recentlyClosed.length).toBe(0);
+  });
+
+  test("multiple successive restores each consume one entry", () => {
+    const { onTabCreated, onTabUpdated, recentlyClosed } = mod;
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(recentlyClosed.length).toBe(1);
+    onTabCreated({ id: 6, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(6, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(recentlyClosed.length).toBe(0);
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
 });
