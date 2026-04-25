@@ -145,6 +145,8 @@ const pendingNewTabs = new Set();
 const movingTabs = new Set();
 // Recently closed tabs — for cmd-shift-T restore detection.
 const recentlyClosed = [];
+// Window IDs created since bootstrap — for cmd-N detection.
+const newlyCreatedWindows = new Set();
 
 // Only route tabs opened from outside Firefox. Tabs opened by clicking a link
 // inside Firefox have openerTabId set; externally-opened tabs do not.
@@ -161,6 +163,14 @@ function onTabCreated(tab) {
   // (external links always arrive with url:"" — the URL is committed asynchronously).
   if (parseSegments(tab.url)) {
     console.log(`[Tab Router] tab ${tab.id} skipped — URL set at creation (not an external link)`);
+    return;
+  }
+  // cmd-N: the first tab in a user-created window should never be re-routed.
+  // windows.onCreated typically fires before tabs.onCreated, so the window ID is
+  // already in newlyCreatedWindows when we get here.
+  if (newlyCreatedWindows.has(tab.windowId)) {
+    newlyCreatedWindows.delete(tab.windowId);
+    console.log(`[Tab Router] tab ${tab.id} skipped — first tab in user-created window`);
     return;
   }
   console.log(`[Tab Router] tab ${tab.id} pending — looks external (url="${tab.url}")`);
@@ -193,6 +203,15 @@ function onTabUpdated(tabId, changeInfo, tab) {
   }
 
   pendingNewTabs.delete(tabId); // only route once per real URL
+
+  // cmd-N safety net: handles the rare case where tabs.onCreated fires before
+  // windows.onCreated (so the window ID wasn't in newlyCreatedWindows yet during
+  // onTabCreated, but is now).
+  if (newlyCreatedWindows.has(tab.windowId)) {
+    newlyCreatedWindows.delete(tab.windowId);
+    console.log(`[Tab Router] tab ${tabId} skipped — first tab in user-created window`);
+    return;
+  }
 
   // cmd-shift-T restore detection: if this URL was recently closed, the tab is a
   // session restore — let Firefox keep it wherever it placed it.
@@ -258,6 +277,18 @@ if (typeof browser !== "undefined") {
     const prev = tabRegistry.get(tabId);
     if (prev) registerTab(tabId, prev.url, newWindowId);
   });
+
+  // Track every newly created window so we can skip routing its initial tab (cmd-N).
+  // browser.windows.create({ tabId }) moves an existing tab — it does not fire
+  // tabs.onCreated — so newlyCreatedWindows entries are only consumed by genuine
+  // new tabs (cmd-N), never by tab-router's own window creation.
+  browser.windows.onCreated.addListener((window) => {
+    newlyCreatedWindows.add(window.id);
+  });
+
+  browser.windows.onRemoved.addListener((windowId) => {
+    newlyCreatedWindows.delete(windowId);
+  });
 }
 
 // ─── Test exports ─────────────────────────────────────────────────────────────
@@ -275,5 +306,6 @@ if (typeof module !== "undefined") {
     onTabUpdated,
     pendingNewTabs,
     recentlyClosed,
+    newlyCreatedWindows,
   };
 }
