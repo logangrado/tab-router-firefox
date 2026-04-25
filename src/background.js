@@ -1,6 +1,7 @@
 const MIN_MATCH_DEPTH = 1;
 const NEW_WINDOW_IF_NO_MATCH = true;
 const IGNORED_SCHEMES = new Set(["about", "moz-extension", "chrome", "file"]);
+const RECENTLY_CLOSED_MAX = 25; // match Firefox's undo stack depth
 
 // ─── Trie ────────────────────────────────────────────────────────────────────
 //
@@ -142,6 +143,10 @@ async function bootstrap() {
 // act on it in onUpdated once the URL is committed.
 const pendingNewTabs = new Set();
 const movingTabs = new Set();
+// Recently closed tabs — for cmd-shift-T restore detection.
+const recentlyClosed = [];
+// Window IDs created since bootstrap — for cmd-N detection.
+const newlyCreatedWindows = new Set();
 
 // Only route tabs opened from outside Firefox. Tabs opened by clicking a link
 // inside Firefox have openerTabId set; externally-opened tabs do not.
@@ -152,6 +157,20 @@ function onTabCreated(tab) {
   }
   if (tab.url === "about:newtab") {
     console.log(`[Tab Router] tab ${tab.id} skipped — Ctrl+T (about:newtab at creation)`);
+    return;
+  }
+  // Any tab whose URL is already known at creation time is not an external app link
+  // (external links always arrive with url:"" — the URL is committed asynchronously).
+  if (parseSegments(tab.url)) {
+    console.log(`[Tab Router] tab ${tab.id} skipped — URL set at creation (not an external link)`);
+    return;
+  }
+  // cmd-N: the first tab in a user-created window should never be re-routed.
+  // windows.onCreated typically fires before tabs.onCreated, so the window ID is
+  // already in newlyCreatedWindows when we get here.
+  if (newlyCreatedWindows.has(tab.windowId)) {
+    newlyCreatedWindows.delete(tab.windowId);
+    console.log(`[Tab Router] tab ${tab.id} skipped — first tab in user-created window`);
     return;
   }
   console.log(`[Tab Router] tab ${tab.id} pending — looks external (url="${tab.url}")`);
@@ -184,6 +203,24 @@ function onTabUpdated(tabId, changeInfo, tab) {
   }
 
   pendingNewTabs.delete(tabId); // only route once per real URL
+
+  // cmd-N safety net: handles the rare case where tabs.onCreated fires before
+  // windows.onCreated (so the window ID wasn't in newlyCreatedWindows yet during
+  // onTabCreated, but is now).
+  if (newlyCreatedWindows.has(tab.windowId)) {
+    newlyCreatedWindows.delete(tab.windowId);
+    console.log(`[Tab Router] tab ${tabId} skipped — first tab in user-created window`);
+    return;
+  }
+
+  // cmd-shift-T restore detection: if this URL was recently closed, the tab is a
+  // session restore — let Firefox keep it wherever it placed it.
+  const restoreIdx = recentlyClosed.lastIndexOf(changeInfo.url);
+  if (restoreIdx !== -1) {
+    recentlyClosed.splice(restoreIdx, 1);
+    console.log(`[Tab Router] tab ${tabId} skipped — restored recently closed ${changeInfo.url}`);
+    return;
+  }
 
   const match = trieLookup(changeInfo.url, tab.windowId);
   console.log(
@@ -227,6 +264,11 @@ if (typeof browser !== "undefined") {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     pendingNewTabs.delete(tabId); // clean up if tab closed before URL committed
+    const prev = tabRegistry.get(tabId);
+    if (prev && parseSegments(prev.url)) {
+      recentlyClosed.push(prev.url);
+      if (recentlyClosed.length > RECENTLY_CLOSED_MAX) recentlyClosed.shift();
+    }
     unregisterTab(tabId);
   });
 
@@ -234,6 +276,18 @@ if (typeof browser !== "undefined") {
   browser.tabs.onAttached.addListener((tabId, { newWindowId }) => {
     const prev = tabRegistry.get(tabId);
     if (prev) registerTab(tabId, prev.url, newWindowId);
+  });
+
+  // Track every newly created window so we can skip routing its initial tab (cmd-N).
+  // browser.windows.create({ tabId }) moves an existing tab — it does not fire
+  // tabs.onCreated — so newlyCreatedWindows entries are only consumed by genuine
+  // new tabs (cmd-N), never by tab-router's own window creation.
+  browser.windows.onCreated.addListener((window) => {
+    newlyCreatedWindows.add(window.id);
+  });
+
+  browser.windows.onRemoved.addListener((windowId) => {
+    newlyCreatedWindows.delete(windowId);
   });
 }
 
@@ -251,5 +305,7 @@ if (typeof module !== "undefined") {
     onTabCreated,
     onTabUpdated,
     pendingNewTabs,
+    recentlyClosed,
+    newlyCreatedWindows,
   };
 }

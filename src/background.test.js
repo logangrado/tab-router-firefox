@@ -352,4 +352,122 @@ describe("tab origin filtering", () => {
     onTabCreated({ id: 1, openerTabId: undefined, url: "" });
     expect(pendingNewTabs.has(1)).toBe(true);
   });
+
+  test("restored tab (url set at creation) is NOT added to pendingNewTabs", () => {
+    const { onTabCreated, pendingNewTabs } = fresh();
+    onTabCreated({ id: 1, openerTabId: undefined, url: "https://gitlab.com/org/repo" });
+    expect(pendingNewTabs.has(1)).toBe(false);
+  });
+});
+
+// ─── cmd-shift-T restore suppression ─────────────────────────────────────────
+
+describe("cmd-shift-T restore suppression", () => {
+  let mod;
+
+  beforeEach(() => {
+    mod = fresh();
+    global.browser = {
+      tabs: { move: jest.fn().mockResolvedValue({}), update: jest.fn().mockResolvedValue({}) },
+      windows: {
+        update: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({ id: 99 }),
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete global.browser;
+  });
+
+  test("tab with URL already set at creation is not routed (parseSegments guard)", () => {
+    const { onTabCreated, onTabUpdated } = mod;
+    onTabCreated({ id: 5, openerTabId: undefined, url: "https://gitlab.com/org/repo", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(global.browser.tabs.move).not.toHaveBeenCalled();
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
+
+  test("restored tab (URL in recentlyClosed) is not routed", () => {
+    const { onTabCreated, onTabUpdated, recentlyClosed } = mod;
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(global.browser.tabs.move).not.toHaveBeenCalled();
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
+
+  test("restored tab consumes its recentlyClosed entry", () => {
+    const { onTabCreated, onTabUpdated, recentlyClosed } = mod;
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(recentlyClosed.length).toBe(0);
+  });
+
+  test("multiple successive restores each consume one entry", () => {
+    const { onTabCreated, onTabUpdated, recentlyClosed } = mod;
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    recentlyClosed.push("https://gitlab.com/org/repo");
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(recentlyClosed.length).toBe(1);
+    onTabCreated({ id: 6, openerTabId: undefined, url: "", windowId: 2 });
+    onTabUpdated(6, { url: "https://gitlab.com/org/repo" }, { windowId: 2 });
+    expect(recentlyClosed.length).toBe(0);
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
+});
+
+// ─── cmd-N new-window suppression ────────────────────────────────────────────
+
+describe("cmd-N new-window suppression", () => {
+  let mod;
+
+  beforeEach(() => {
+    mod = fresh();
+    global.browser = {
+      tabs: { move: jest.fn().mockResolvedValue({}), update: jest.fn().mockResolvedValue({}) },
+      windows: {
+        update: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({ id: 99 }),
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete global.browser;
+  });
+
+  test("cmd-N tab not routed — window ID consumed in onTabCreated", () => {
+    const { onTabCreated, onTabUpdated, newlyCreatedWindows, pendingNewTabs } = mod;
+    newlyCreatedWindows.add(1); // simulate windows.onCreated firing before tabs.onCreated
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 1 });
+    expect(pendingNewTabs.has(5)).toBe(false);
+    expect(newlyCreatedWindows.has(1)).toBe(false); // entry consumed
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 1 });
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+  });
+
+  test("cmd-N tab not routed — safety net in onTabUpdated", () => {
+    const { onTabCreated, onTabUpdated, newlyCreatedWindows } = mod;
+    // tabs.onCreated fires before windows.onCreated: tab enters pending first
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 1 });
+    newlyCreatedWindows.add(1); // windows.onCreated fires after
+    onTabUpdated(5, { url: "https://gitlab.com/org/repo" }, { windowId: 1 });
+    expect(global.browser.windows.create).not.toHaveBeenCalled();
+    expect(global.browser.tabs.move).not.toHaveBeenCalled();
+  });
+
+  test("subsequent external link in same window is still routed", () => {
+    const { registerTab, onTabCreated, onTabUpdated, newlyCreatedWindows } = mod;
+    // Window 1 is new; its initial tab (5) consumes the entry.
+    // A later external link (tab 6) in the same window should be routed normally.
+    newlyCreatedWindows.add(1);
+    onTabCreated({ id: 5, openerTabId: undefined, url: "", windowId: 1 }); // consumes entry
+    registerTab(10, "https://github.com/foo/bar", 2);
+    onTabCreated({ id: 6, openerTabId: undefined, url: "", windowId: 1 }); // external link
+    onTabUpdated(6, { url: "https://github.com/foo/bar" }, { windowId: 1 });
+    expect(global.browser.tabs.move).toHaveBeenCalledWith(6, { windowId: 2, index: -1 });
+  });
 });
