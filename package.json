@@ -6,6 +6,7 @@
     "lint": "eslint src && web-ext lint --source-dir src",
     "format": "prettier --write src",
     "format:check": "prettier --check src",
+    "dev": "./dev.sh",
     "run": "web-ext run   --source-dir src",
     "test": "jest",
     "preversion": "node scripts/preversion.js"
