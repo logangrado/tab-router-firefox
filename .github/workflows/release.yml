@@ -1,8 +1,7 @@
 name: Release
 
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
 
 permissions: read-all
@@ -10,7 +9,7 @@ permissions: read-all
 jobs:
   compute-version:
     name: Compute next version
-    if: github.event.pull_request.merged == true
+    if: github.event.forced == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,7 +27,6 @@ jobs:
         id: compute
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
 
@@ -42,6 +40,37 @@ jobs:
           PATCH=$(echo "$LATEST_TAG" | sed 's/^v//' | cut -d. -f3)
 
           echo "Latest tag: $LATEST_TAG"
+
+          # Find the PR that was merged via this push (retry for API propagation delay)
+          PR_NUMBER=""
+          for attempt in 1 2 3; do
+            PR_NUMBER=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].number' 2>/dev/null || echo "")
+            if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "PR not yet indexed, retrying in 10s (attempt $attempt/3)..."
+              sleep 10
+            fi
+          done
+
+          # Fallback: parse PR number from squash-merge commit message "(#N)"
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            COMMIT_MSG=$(git log -1 --format='%s' "$GITHUB_SHA")
+            PR_NUMBER=$(echo "$COMMIT_MSG" | grep -oE '\(#[0-9]+\)$' | grep -oE '[0-9]+' || echo "")
+            if [ -n "$PR_NUMBER" ]; then
+              echo "Extracted PR number from commit message: #$PR_NUMBER"
+            fi
+          fi
+
+          echo "PR number: $PR_NUMBER"
+
+          # Skip if no PR is associated (e.g. a direct push to main)
+          if [ "$PR_NUMBER" = "null" ] || [ -z "$PR_NUMBER" ]; then
+            echo "No PR found for this push, skipping release"
+            echo "skip_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Fetch all commit subjects from the PR (paginated)
           COMMITS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" \
@@ -98,7 +127,7 @@ jobs:
           fi
 
   create-release:
-    name: Bump version and create release
+    name: Create release
     needs: compute-version
     if: needs.compute-version.outputs.skip_release == 'false'
     runs-on: ubuntu-latest
@@ -112,31 +141,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
       - name: Configure git identity
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
 
-      - name: Bump version
+      - name: Tag and push
         run: |
-          # Strip leading 'v' — npm version expects bare semver (e.g. 0.2.0)
-          VERSION="${NEXT_VERSION#v}"
-          npm version "$VERSION"
-
-      - name: Push version bump commit and tag
-        # Requires "Allow GitHub Actions to create or approve pull requests" and
-        # "Allow GitHub Actions to bypass required reviews" in repo Settings →
-        # Actions → General, or use a PAT with repo write access instead of
-        # GITHUB_TOKEN if main branch protection blocks direct pushes.
-        run: |
-          git push origin main
+          git tag -a "$NEXT_VERSION" -m "Release $NEXT_VERSION"
           git push origin "$NEXT_VERSION"
 
       - name: Create GitHub Release
@@ -163,6 +175,11 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Stamp version into manifest.json
+        run: |
+          VERSION="${NEXT_VERSION#v}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src/manifest.json
 
       - name: Sign and submit to AMO
         env:
